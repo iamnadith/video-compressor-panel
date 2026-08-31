@@ -19,7 +19,7 @@ from typing import Any
 import requests
 
 
-AGENT_VERSION = "1.2.0"
+AGENT_VERSION = "1.3.0"
 DEFAULT_STATE_DIR = Path(".video-processor")
 DOWNLOAD_PROGRESS_END = 10.0
 PASS_ONE_PROGRESS_END = 52.5
@@ -143,6 +143,20 @@ class DurableState:
         path = self.root / "jobs" / job_id
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+
+def local_job_paths(job_dir: Path, job: dict[str, Any]) -> tuple[Path, Path]:
+    """Return separate local input/output paths even when remote names match."""
+    source_name = Path(str(job["source_name"])).name
+    if not source_name or source_name in {".", ".."}:
+        raise RuntimeError("The claimed job has an invalid source filename")
+    input_path = job_dir / "input" / source_name
+    output_path = job_dir / "output" / "encoded.mp4"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if input_path == output_path:
+        raise RuntimeError("The local input and output paths must be different")
+    return input_path, output_path
 
 
 class ApiError(RuntimeError):
@@ -531,8 +545,7 @@ def process_job(
 ) -> None:
     job = active["job"]
     job_dir = state.job_dir(job["id"])
-    input_path = job_dir / str(job["source_name"])
-    output_path = job_dir / str(job["output_name"])
+    input_path, output_path = local_job_paths(job_dir, job)
     heartbeat_interval = int(config["runtime"]["heartbeat_interval_seconds"])
     progress = ProgressState(
         value=float(active.get("progress", 0)),

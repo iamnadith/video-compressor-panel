@@ -54,6 +54,17 @@ class DurableStateTests(unittest.TestCase):
                     "configured-worker",
                 )
 
+    def test_local_input_and_output_paths_do_not_collide(self):
+        with tempfile.TemporaryDirectory() as directory:
+            input_path, output_path = processor.local_job_paths(
+                Path(directory) / "job-1",
+                {"source_name": "same-name.mp4", "output_name": "same-name.mp4"},
+            )
+            self.assertNotEqual(input_path, output_path)
+            self.assertEqual(input_path.name, "same-name.mp4")
+            self.assertEqual(output_path.name, "encoded.mp4")
+            self.assertNotEqual(input_path.parent, output_path.parent)
+
     def test_active_checkpoint_is_atomic_and_readable(self):
         with tempfile.TemporaryDirectory() as directory:
             state = processor.DurableState(Path(directory))

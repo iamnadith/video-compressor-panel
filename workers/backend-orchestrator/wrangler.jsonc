@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "video-pipeline-orchestrator",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-29",
+  "workers_dev": true,
+  "limits": {
+    "cpu_ms": 10
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  }
+}
+

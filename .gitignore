@@ -1,0 +1,77 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+workers/**/node_modules/
+workers/**/.pnpm-store/
+workers/**/dist/
+workers/**/build/
+workers/**/.cache/
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+!workers/**/.env.example
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Durable local processor state and media
+.video-processor/
+workers/video-processor/.video-processor/
+workers/video-processor/.venv/
+workers/video-processor/venv/
+*.part
+*.temp.mp4
+ffmpeg-pass*
+
+# Cloudflare Wrangler
+.wrangler/
+workers/backend-orchestrator/.wrangler/
+workers/backend-orchestrator/.dev.vars
+workers/backend-orchestrator/.dev.vars.*
+workers/backend-orchestrator/wrangler.toml.local
+
+# Local database migration-tool state
+.db-local/
+
+# Local logs and operating-system files
+logs/
+Thumbs.db

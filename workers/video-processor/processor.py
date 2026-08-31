@@ -19,7 +19,7 @@ from typing import Any
 import requests
 
 
-AGENT_VERSION = "1.3.0"
+AGENT_VERSION = "1.3.1"
 DEFAULT_STATE_DIR = Path(".video-processor")
 DOWNLOAD_PROGRESS_END = 10.0
 PASS_ONE_PROGRESS_END = 52.5
@@ -73,6 +73,11 @@ def wait_for_stop(seconds: float, deadline: float | None = None) -> None:
     if deadline is not None:
         timeout = min(timeout, max(0.0, deadline - time.monotonic()))
     STOP.wait(timeout)
+
+
+def wait_for_network_retry(operation: str, error: requests.RequestException, deadline: float | None = None) -> None:
+    log(f"{operation} network request failed; retrying: {error}")
+    wait_for_stop(15, deadline)
 
 
 def request_timeout(deadline: float | None = None) -> tuple[float, float]:
@@ -614,7 +619,13 @@ def main() -> int:
     state = DurableState(args.state_dir)
     client = OrchestratorClient(args.orchestrator_url, args.secret)
     instance_id = state.instance_id()
-    registration = client.register(instance_id)
+    while True:
+        try:
+            registration = client.register(instance_id)
+            break
+        except requests.RequestException as error:
+            wait_for_network_retry("Worker registration", error)
+            ensure_running()
     state.save_session({
         "instance_id": instance_id,
         "worker_id": client.worker_id,
@@ -631,7 +642,11 @@ def main() -> int:
             ensure_running(deadline)
             active = state.active()
             if not active:
-                response = client.claim()
+                try:
+                    response = client.claim()
+                except requests.RequestException as error:
+                    wait_for_network_retry("Job claim", error, deadline)
+                    continue
                 ensure_running(deadline)
                 config = response.get("config", config)
                 job = response.get("job")

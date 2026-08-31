@@ -6,6 +6,17 @@ This Cloudflare Worker is the public processor gateway and one-minute scheduler.
 
 Use [`.env.example`](.env.example) as the variable reference. Cloudflare does not deploy that file automatically. For a deployed Worker, configure the two encrypted runtime secrets from this directory:
 
+In Cloudflare Workers > Settings > Builds, use these exact values:
+
+```text
+Root directory: workers/backend-orchestrator
+Build command: leave blank
+Deploy command: pnpm run deploy
+Production branch: main
+```
+
+The root directory must contain this `wrangler.jsonc`; it is a Cloudflare Workers Builds setting, not a Worker runtime environment variable.
+
 ```powershell
 cd workers/backend-orchestrator
 pnpm install

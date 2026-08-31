@@ -234,7 +234,7 @@ class QueryBuilder<T extends QueryResultRow = Record<string, any>> implements Pr
     let index = start
     for (const filter of this.filters) {
       if (filter.operator === "ANY") {
-        clauses.push(`${identifier(this.table)}.${identifier(filter.column)} = ANY($${index})`)
+        clauses.push(`${identifier(this.table)}.${identifier(filter.column)}::text = ANY($${index}::text[])`)
       } else clauses.push(`${identifier(this.table)}.${identifier(filter.column)} = $${index}`)
       values.push(filter.value)
       index += 1

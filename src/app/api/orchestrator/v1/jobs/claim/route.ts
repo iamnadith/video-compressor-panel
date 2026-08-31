@@ -40,13 +40,18 @@ export async function POST(request: Request) {
 
   try {
     const source = await headObject(job.source_key)
-    if (!source || source.ContentLength !== Number(job.source_size)) {
+    let inputKey = job.source_key
+    let input = source
+    if ((!input || input.ContentLength !== Number(job.source_size)) && job.claimed_key) {
+      inputKey = job.claimed_key
+      input = await headObject(inputKey)
+    }
+    if (!input || input.ContentLength !== Number(job.source_size)) {
       throw new Error("Source object verification failed.")
     }
 
     // The database lease is the atomic claim. Keep the multi-gigabyte object in
     // place and sign it directly instead of blocking this request on an R2 copy.
-    const inputKey = job.source_key
     const admin = createAdminClient()
     const { data: ready, error: readyError } = await admin.rpc("mark_pipeline_job_ready", {
       p_job_id: job.id,

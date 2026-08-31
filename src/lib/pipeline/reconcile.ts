@@ -59,7 +59,13 @@ export async function reconcilePipeline(triggerSource: string) {
   let settings: Awaited<ReturnType<typeof getPipelineSettings>>
   let r2Bucket: string
   let run: { id: number }
+  let requeued = 0
   try {
+    const { data: expired, error: expiredError } = await admin
+      .rpc("reconcile_expired_pipeline_leases")
+    if (expiredError) throw expiredError
+    requeued = Number(expired ?? 0)
+
     settings = await getPipelineSettings()
     r2Bucket = (await getR2Config()).r2Bucket
     const { data, error } = await admin
@@ -76,7 +82,6 @@ export async function reconcilePipeline(triggerSource: string) {
 
   let discovered = 0
   let repaired = 0
-  let requeued = 0
 
   try {
     const ingest = await readPrefixPage(settings.ingest_prefix)
@@ -197,11 +202,6 @@ export async function reconcilePipeline(triggerSource: string) {
       processed.page,
       processed.completedCycles,
     )
-
-    const { data: expired, error: expiredError } = await admin
-      .rpc("reconcile_expired_pipeline_leases")
-    if (expiredError) throw expiredError
-    requeued = Number(expired ?? 0)
 
     await admin.from("reconcile_runs").update({
       discovered_count: discovered,

@@ -2,6 +2,7 @@ import "server-only"
 
 import path from "node:path"
 
+import { query } from "@/lib/db"
 import { getPipelineSettings } from "@/lib/pipeline/config"
 import { deleteClaimedObject, getR2Config, listPrefixPage } from "@/lib/r2"
 import { createAdminClient } from "@/lib/db-client"
@@ -70,16 +71,14 @@ export async function reconcilePipeline(triggerSource: string) {
   let requeued = 0
   try {
     const staleBefore = new Date(Date.now() - 5 * 60 * 1000).toISOString()
-    const { error: staleRunsError } = await admin
-      .from("reconcile_runs")
-      .update({
-        status: "failed",
-        error_message: "Reconciliation run did not finish and was recovered by a later audit.",
-        completed_at: new Date().toISOString(),
-      })
-      .eq("status", "running")
-      .lt("started_at", staleBefore)
-    if (staleRunsError) throw staleRunsError
+    await query(
+      `update public.reconcile_runs
+       set status = 'failed',
+           error_message = 'Reconciliation run did not finish and was recovered by a later audit.',
+           completed_at = coalesce(completed_at, now())
+       where status = 'running' and started_at < $1`,
+      [staleBefore],
+    )
 
     const { data: expired, error: expiredError } = await admin
       .rpc("reconcile_expired_pipeline_leases")

@@ -73,6 +73,14 @@ jobs:
               timeout=(10, 20),
           )
           print(f"Orchestrator authenticated route preflight: HTTP {probe.status_code}")
+          if probe.status_code == 500:
+              try:
+                  payload = probe.json()
+              except ValueError:
+                  payload = {}
+              if payload.get("error") == "worker_misconfigured":
+                  missing = ", ".join(payload.get("missing", [])) or "unknown binding"
+                  raise SystemExit(f"The deployed Cloudflare Worker is missing: {missing}")
           if probe.status_code == 500 and "1101" in probe.text:
               raise SystemExit("The deployed Cloudflare Worker threw an exception; check PANEL_URL and ORCHESTRATOR_SECRET in Worker secrets")
           if probe.status_code != 401:

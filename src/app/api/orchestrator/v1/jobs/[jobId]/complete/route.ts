@@ -39,7 +39,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
 
   if (job.claimed_key) {
     try {
-      await deleteClaimedObject(job.claimed_key)
+      await deleteClaimedObject(job.claimed_key, job.output_key)
     } catch {
       // Reconciliation retries cleanup; completion remains durable.
     }

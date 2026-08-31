@@ -138,7 +138,10 @@ export async function createJobTransferUrls(inputKey: string, outputKey: string)
   return { downloadUrl, uploadUrl, expiresIn }
 }
 
-export async function deleteClaimedObject(key: string) {
+export async function deleteClaimedObject(key: string, protectedKey?: string) {
+  if (protectedKey && key === protectedKey) {
+    throw new Error("Refusing to delete the processed output as pipeline input.")
+  }
   const { client, config } = await getR2Client()
   await client.send(new DeleteObjectCommand({ Bucket: config.r2Bucket, Key: key }))
 }

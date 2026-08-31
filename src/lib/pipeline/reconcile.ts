@@ -211,7 +211,7 @@ export async function reconcilePipeline(triggerSource: string) {
       }
       if (job?.claimed_key && job.state !== "cancelled") {
         try {
-          await deleteClaimedObject(job.claimed_key)
+          await deleteClaimedObject(job.claimed_key, object.key)
         } catch {
           // Keep reconciliation durable; a later cycle retries completed-input cleanup.
         }

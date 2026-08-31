@@ -46,5 +46,19 @@ class CompressionMathTests(unittest.TestCase):
         )
 
 
+class RuntimeGuardTests(unittest.TestCase):
+    def test_expired_runtime_requests_a_safe_shutdown(self):
+        processor.STOP.clear()
+        processor.MAX_RUNTIME_REACHED.clear()
+        try:
+            with self.assertRaises(processor.ProcessorStopping):
+                processor.ensure_running(processor.time.monotonic() - 1)
+            self.assertTrue(processor.STOP.is_set())
+            self.assertTrue(processor.MAX_RUNTIME_REACHED.is_set())
+        finally:
+            processor.STOP.clear()
+            processor.MAX_RUNTIME_REACHED.clear()
+
+
 if __name__ == "__main__":
     unittest.main()

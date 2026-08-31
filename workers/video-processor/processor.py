@@ -19,9 +19,10 @@ from typing import Any
 import requests
 
 
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.1.0"
 DEFAULT_STATE_DIR = Path(".video-processor")
 STOP = threading.Event()
+MAX_RUNTIME_REACHED = threading.Event()
 
 
 def log(message: str) -> None:
@@ -31,6 +32,51 @@ def log(message: str) -> None:
 def require_binary(name: str) -> None:
     if shutil.which(name) is None:
         raise RuntimeError(f"'{name}' was not found in PATH")
+
+
+class ProcessorStopping(RuntimeError):
+    """The worker is shutting down without losing its durable job checkpoint."""
+
+
+def ensure_running(deadline: float | None = None) -> None:
+    if MAX_RUNTIME_REACHED.is_set() or (deadline is not None and time.monotonic() >= deadline):
+        MAX_RUNTIME_REACHED.set()
+        STOP.set()
+        raise ProcessorStopping("maximum runtime reached")
+    if STOP.is_set():
+        raise ProcessorStopping("shutdown requested")
+
+
+def start_runtime_guard(deadline: float | None) -> threading.Thread | None:
+    if deadline is None:
+        return None
+
+    def guard() -> None:
+        remaining = max(0.0, deadline - time.monotonic())
+        if STOP.wait(remaining):
+            return
+        MAX_RUNTIME_REACHED.set()
+        STOP.set()
+        log("Maximum runtime reached; stopping after the current safe checkpoint")
+
+    thread = threading.Thread(target=guard, name="runtime-guard", daemon=True)
+    thread.start()
+    return thread
+
+
+def wait_for_stop(seconds: float, deadline: float | None = None) -> None:
+    timeout = max(0.0, seconds)
+    if deadline is not None:
+        timeout = min(timeout, max(0.0, deadline - time.monotonic()))
+    STOP.wait(timeout)
+
+
+def request_timeout(deadline: float | None = None) -> tuple[float, float]:
+    """Keep a stalled signed transfer inside the worker's shutdown window."""
+    if deadline is None:
+        return (20.0, 900.0)
+    remaining = max(1.0, deadline - time.monotonic())
+    return (min(20.0, remaining), min(900.0, remaining))
 
 
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
@@ -246,7 +292,15 @@ def calculate_video_bitrate_kbps(
     return max(minimum_video_kbps, int(total_bitrate_kbps - audio_kbps))
 
 
-def run_pass(command: list[str], duration: float, progress: ProgressState, start: float, span: float, lease: LeaseKeeper) -> None:
+def run_pass(
+    command: list[str],
+    duration: float,
+    progress: ProgressState,
+    start: float,
+    span: float,
+    lease: LeaseKeeper,
+    deadline: float | None = None,
+) -> None:
     process = subprocess.Popen(
         command,
         stderr=subprocess.PIPE,
@@ -257,9 +311,7 @@ def run_pass(command: list[str], duration: float, progress: ProgressState, start
     )
     try:
         while True:
-            if STOP.is_set():
-                process.kill()
-                raise RuntimeError("Processing stopped")
+            ensure_running(deadline)
             if lease.claim_lost.is_set():
                 process.kill()
                 raise ApiError(lease.lost_status, "job_lease_lost")
@@ -278,7 +330,16 @@ def run_pass(command: list[str], duration: float, progress: ProgressState, start
             process.wait()
 
 
-def compress_exact(input_path: Path, output_path: Path, job_dir: Path, settings: dict[str, Any], progress: ProgressState, lease: LeaseKeeper) -> None:
+def compress_exact(
+    input_path: Path,
+    output_path: Path,
+    job_dir: Path,
+    settings: dict[str, Any],
+    progress: ProgressState,
+    lease: LeaseKeeper,
+    deadline: float | None = None,
+) -> None:
+    ensure_running(deadline)
     duration = duration_seconds(input_path)
     if duration <= 0:
         raise RuntimeError("ffprobe returned an invalid duration")
@@ -301,16 +362,17 @@ def compress_exact(input_path: Path, output_path: Path, job_dir: Path, settings:
         "ffmpeg", "-y", "-i", str(input_path), "-vf", f"scale=-2:{max_res}",
         "-c:v", "libx264", "-b:v", f"{video_bitrate_kbps}k", "-pass", "1",
         "-passlogfile", passlog, "-preset", preset, "-an", "-f", "mp4", null_output,
-    ], duration, progress, 0, 50, lease)
+    ], duration, progress, 0, 50, lease, deadline)
 
     progress.current_pass = "P2"
+    ensure_running(deadline)
     run_pass([
         "ffmpeg", "-y", "-i", str(input_path), "-vf", f"scale=-2:{max_res}",
         "-c:v", "libx264", "-b:v", f"{video_bitrate_kbps}k", "-pass", "2",
         "-passlogfile", passlog, "-preset", preset,
         "-maxrate", f"{video_bitrate_kbps}k", "-bufsize", f"{video_bitrate_kbps * 2}k",
         "-c:a", "aac", "-b:a", f"{audio_kbps}k", str(temporary_output),
-    ], duration, progress, 50, 50, lease)
+    ], duration, progress, 50, 50, lease, deadline)
 
     if not temporary_output.exists() or temporary_output.stat().st_size <= 0:
         raise RuntimeError("FFmpeg did not produce a valid output file")
@@ -319,7 +381,8 @@ def compress_exact(input_path: Path, output_path: Path, job_dir: Path, settings:
         item.unlink(missing_ok=True)
 
 
-def download(job: dict[str, Any], destination: Path, lease: LeaseKeeper) -> None:
+def download(job: dict[str, Any], destination: Path, lease: LeaseKeeper, deadline: float | None = None) -> None:
+    ensure_running(deadline)
     partial = destination.with_suffix(destination.suffix + ".part")
     existing = partial.stat().st_size if partial.exists() else 0
     expected_size = int(job["source_size"])
@@ -332,21 +395,25 @@ def download(job: dict[str, Any], destination: Path, lease: LeaseKeeper) -> None
         partial.unlink(missing_ok=True)
         existing = 0
     headers = {"Range": f"bytes={existing}-"} if existing else {}
-    with requests.get(job["download_url"], headers=headers, stream=True, timeout=(20, 900)) as response:
+    with requests.get(
+        job["download_url"],
+        headers=headers,
+        stream=True,
+        timeout=request_timeout(deadline),
+    ) as response:
         # Signed object stores may answer a stale range with 416. If the part
         # is not complete, discard it and restart from byte zero safely.
         if existing and response.status_code == 416:
             response.close()
             partial.unlink(missing_ok=True)
-            return download(job, destination, lease)
+            return download(job, destination, lease, deadline)
         if existing and response.status_code == 200:
             existing = 0
         response.raise_for_status()
         mode = "ab" if existing and response.status_code == 206 else "wb"
         with partial.open(mode) as handle:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if STOP.is_set():
-                    raise RuntimeError("Download stopped")
+                ensure_running(deadline)
                 if lease.claim_lost.is_set():
                     raise ApiError(lease.lost_status, "job_lease_lost")
                 if chunk:
@@ -359,16 +426,16 @@ def download(job: dict[str, Any], destination: Path, lease: LeaseKeeper) -> None
 
 
 class LeaseAwareReader:
-    def __init__(self, handle, lease: LeaseKeeper):
+    def __init__(self, handle, lease: LeaseKeeper, deadline: float | None = None):
         self.handle = handle
         self.lease = lease
+        self.deadline = deadline
 
     def __len__(self) -> int:
         return os.fstat(self.handle.fileno()).st_size
 
     def read(self, size: int = -1) -> bytes:
-        if STOP.is_set():
-            raise RuntimeError("Upload stopped")
+        ensure_running(self.deadline)
         if self.lease.claim_lost.is_set():
             raise ApiError(self.lease.lost_status, "job_lease_lost")
         return self.handle.read(size)
@@ -377,21 +444,28 @@ class LeaseAwareReader:
         return getattr(self.handle, name)
 
 
-def upload(job: dict[str, Any], source: Path, lease: LeaseKeeper) -> None:
+def upload(job: dict[str, Any], source: Path, lease: LeaseKeeper, deadline: float | None = None) -> None:
+    ensure_running(deadline)
     with source.open("rb") as handle:
         response = requests.put(
             job["upload_url"],
-            data=LeaseAwareReader(handle, lease),
+            data=LeaseAwareReader(handle, lease, deadline),
             headers={
                 "Content-Type": job.get("upload_content_type", "video/mp4"),
                 "Content-Length": str(source.stat().st_size),
             },
-            timeout=(20, 900),
+            timeout=request_timeout(deadline),
         )
     response.raise_for_status()
 
 
-def process_job(client: OrchestratorClient, state: DurableState, active: dict[str, Any], config: dict[str, Any]) -> None:
+def process_job(
+    client: OrchestratorClient,
+    state: DurableState,
+    active: dict[str, Any],
+    config: dict[str, Any],
+    deadline: float | None = None,
+) -> None:
     job = active["job"]
     job_dir = state.job_dir(job["id"])
     input_path = job_dir / str(job["source_name"])
@@ -405,18 +479,20 @@ def process_job(client: OrchestratorClient, state: DurableState, active: dict[st
     lease = LeaseKeeper(client, job, progress, heartbeat_interval)
 
     try:
+        ensure_running(deadline)
         client.heartbeat(job, progress.value, progress.current_pass, progress.stage)
+        ensure_running(deadline)
         job.update(client.transfer(job))
         state.save_active({**active, "job": job})
         lease.start()
         if not input_path.exists() and not output_path.exists():
             log(f"Downloading {job['source_name']}")
-            download(job, input_path, lease)
+            download(job, input_path, lease, deadline)
             state.save_active({**active, "stage": "claimed"})
 
         if not output_path.exists():
             log(f"Compressing {job['source_name']} with settings version {config['version']}")
-            compress_exact(input_path, output_path, job_dir, job["settings"], progress, lease)
+            compress_exact(input_path, output_path, job_dir, job["settings"], progress, lease, deadline)
             state.save_active({**active, "stage": "uploading", "progress": progress.value})
 
         if lease.claim_lost.is_set():
@@ -424,10 +500,11 @@ def process_job(client: OrchestratorClient, state: DurableState, active: dict[st
         progress.stage = "uploading"
         progress.current_pass = None
         client.heartbeat(job, progress.value, None, "uploading")
+        ensure_running(deadline)
         job.update(client.transfer(job))
         state.save_active({**active, "job": job, "stage": "uploading", "progress": progress.value})
         log(f"Uploading {job['output_name']}")
-        upload(job, output_path, lease)
+        upload(job, output_path, lease, deadline)
         client.complete(job)
         log(f"Completed {job['source_name']}")
         shutil.rmtree(job_dir, ignore_errors=True)
@@ -463,58 +540,77 @@ def main() -> int:
     })
     config = registration["config"]
     started = time.monotonic()
+    deadline = started + args.max_runtime if args.max_runtime else None
+    runtime_guard = start_runtime_guard(deadline)
     idle_since: float | None = None
 
-    while not STOP.is_set():
-        if args.max_runtime and time.monotonic() - started >= args.max_runtime:
-            log("Maximum runtime reached")
-            break
-        active = state.active()
-        if not active:
-            response = client.claim()
-            config = response.get("config", config)
-            job = response.get("job")
-            if not job:
-                idle_since = idle_since or time.monotonic()
-                if args.once or (args.exit_when_idle and time.monotonic() - idle_since >= args.exit_when_idle):
-                    break
-                STOP.wait(int(config["runtime"].get("idle_poll_seconds", 15)))
-                continue
-            idle_since = None
-            active = {"job": job, "stage": "claimed", "progress": 0, "config_version": config["version"]}
-            state.save_active(active)
+    try:
+        while not STOP.is_set():
+            ensure_running(deadline)
+            active = state.active()
+            if not active:
+                response = client.claim()
+                ensure_running(deadline)
+                config = response.get("config", config)
+                job = response.get("job")
+                if not job:
+                    idle_since = idle_since or time.monotonic()
+                    if args.once or (args.exit_when_idle and time.monotonic() - idle_since >= args.exit_when_idle):
+                        break
+                    wait_for_stop(int(config["runtime"].get("idle_poll_seconds", 15)), deadline)
+                    continue
+                idle_since = None
+                active = {"job": job, "stage": "claimed", "progress": 0, "config_version": config["version"]}
+                state.save_active(active)
 
-        try:
-            process_job(client, state, active, config)
-        except ApiError as error:
-            if error.status == 401:
-                log("Worker session expired; registering again")
-                try:
-                    registration = client.register(instance_id)
-                    config = registration["config"]
-                    state.save_session({
-                        "instance_id": instance_id,
-                        "worker_id": client.worker_id,
-                        "worker_token": client.worker_token,
-                    })
-                except Exception as registration_error:
-                    log(f"Worker registration failed: {registration_error}")
-                    STOP.wait(15)
-                continue
-            if error.status == 409:
-                log(f"Job ownership ended: {error}")
-                state.clear_active()
-                continue
-            log(f"API error: {error}")
-            STOP.wait(10)
-        except Exception as error:
-            log(f"Job failed: {error}")
             try:
-                client.fail(active["job"], "processor_error", str(error), retryable=True)
-                state.clear_active()
-            except Exception as report_error:
-                log(f"Failure report could not be delivered; checkpoint retained: {report_error}")
-            STOP.wait(5)
+                process_job(client, state, active, config, deadline)
+            except ApiError as error:
+                if error.status == 401:
+                    log("Worker session expired; registering again")
+                    try:
+                        registration = client.register(instance_id)
+                        config = registration["config"]
+                        state.save_session({
+                            "instance_id": instance_id,
+                            "worker_id": client.worker_id,
+                            "worker_token": client.worker_token,
+                        })
+                    except Exception as registration_error:
+                        log(f"Worker registration failed: {registration_error}")
+                        wait_for_stop(15, deadline)
+                    continue
+                if error.status == 409:
+                    log(f"Job ownership ended: {error}")
+                    state.clear_active()
+                    continue
+                log(f"API error: {error}")
+                wait_for_stop(10, deadline)
+            except ProcessorStopping as error:
+                log(f"Processor stopping: {error}")
+                if MAX_RUNTIME_REACHED.is_set():
+                    try:
+                        client.fail(active["job"], "runtime_budget", str(error), retryable=True)
+                        state.clear_active()
+                    except Exception as report_error:
+                        log(f"Shutdown requeue could not be delivered; checkpoint retained: {report_error}")
+                break
+            except Exception as error:
+                if STOP.is_set():
+                    log(f"Processor stopping; checkpoint retained: {error}")
+                    break
+                log(f"Job failed: {error}")
+                try:
+                    client.fail(active["job"], "processor_error", str(error), retryable=True)
+                    state.clear_active()
+                except Exception as report_error:
+                    log(f"Failure report could not be delivered; checkpoint retained: {report_error}")
+                wait_for_stop(5, deadline)
+    except ProcessorStopping as error:
+        log(f"Processor stopping: {error}")
+    finally:
+        if runtime_guard and runtime_guard.is_alive():
+            runtime_guard.join(timeout=1)
 
     return 0
 

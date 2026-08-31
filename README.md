@@ -77,7 +77,7 @@ The processor reproduces the supplied two-pass settings: libx264, `scale=-2:heig
 - `ORCHESTRATOR_URL`
 - `WORKER_SHARED_SECRET`
 
-It runs the processor every 15 minutes and can also be started manually. It does not deploy the panel or Cloudflare Worker.
+It runs the processor every 15 minutes and can also be started manually. Each run installs FFmpeg/FFprobe with the `libx264` encoder, polls continuously for up to six hours, and exits ten minutes early so a job in progress can be stopped and requeued safely. The workflow concurrency group prevents overlapping processor runs. It does not deploy the panel or Cloudflare Worker.
 
 ## Verification
 

@@ -4,7 +4,7 @@
 //   Deploy command: pnpm run deploy
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "video-pipeline-orchestrator",
+  "name": "video-compressor-panel",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-29",
   "workers_dev": true,

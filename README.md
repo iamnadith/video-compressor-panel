@@ -49,7 +49,7 @@ pnpm exec wrangler secret put ORCHESTRATOR_SECRET
 pnpm exec wrangler deploy
 ```
 
-`PANEL_URL` is the public Vercel origin, such as `https://compressor.example.com`. The orchestrator secret must match the value entered in Dashboard > Settings. The cron in `wrangler.jsonc` runs every minute. The gateway caches only non-secret processor configuration for 60 seconds.
+`PANEL_URL` is the public Vercel origin, such as `https://compressor.example.com`. The orchestrator secret must match the value entered in Dashboard > Settings. The deployed Worker is `video-compressor-panel`; the cron in `wrangler.jsonc` runs every minute. The gateway caches only non-secret processor configuration for 60 seconds.
 
 The Worker build entrypoint is `workers/backend-orchestrator/src/index.ts`, configured by `workers/backend-orchestrator/wrangler.jsonc`; deploy commands must be run from `workers/backend-orchestrator` (or passed that directory explicitly).
 

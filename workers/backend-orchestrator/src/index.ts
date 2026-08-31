@@ -1,6 +1,6 @@
 interface Env {
-  PANEL_URL: string
-  ORCHESTRATOR_SECRET: string
+  PANEL_URL?: string
+  ORCHESTRATOR_SECRET?: string
 }
 
 interface SchedulerEvent {
@@ -26,26 +26,56 @@ function bearer(request: Request) {
   return value.toLowerCase().startsWith("bearer ") ? value.slice(7).trim() : ""
 }
 
+function workerConfigError(env: Env): Response | null {
+  const missing = [
+    ["PANEL_URL", env.PANEL_URL],
+    ["ORCHESTRATOR_SECRET", env.ORCHESTRATOR_SECRET],
+  ]
+    .filter(([, value]) => !value?.trim())
+    .map(([name]) => name)
+
+  if (missing.length) {
+    console.error("Worker configuration is missing required secrets", { missing })
+    return json({ error: "worker_misconfigured", missing }, 500)
+  }
+
+  try {
+    const parsed = new URL(env.PANEL_URL!)
+    if (!["https:", "http:"].includes(parsed.protocol) || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+      throw new Error("PANEL_URL must be an origin without a path, query, or hash")
+    }
+  } catch (error) {
+    console.error("Worker PANEL_URL is invalid", error)
+    return json({ error: "worker_misconfigured", message: "PANEL_URL must be a valid panel origin." }, 500)
+  }
+
+  return null
+}
+
 function panelUrl(env: Env, pathname: string) {
-  const base = env.PANEL_URL.replace(/\/$/, "")
-  return `${base}/api/orchestrator${pathname}`
+  return `${new URL(env.PANEL_URL!).origin}/api/orchestrator${pathname}`
 }
 
 async function forward(request: Request, env: Env, workerSecret: string) {
   const url = new URL(request.url)
   const headers = new Headers(request.headers)
   headers.delete("authorization")
-  headers.set("x-orchestrator-secret", env.ORCHESTRATOR_SECRET)
+  headers.set("x-orchestrator-secret", env.ORCHESTRATOR_SECRET!)
   headers.set("x-worker-secret", workerSecret)
   headers.set("x-forwarded-host", url.host)
 
-  const upstream = new Request(panelUrl(env, url.pathname), {
-    method: request.method,
-    headers,
-    body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
-    redirect: "manual",
-  })
-  return fetch(upstream)
+  try {
+    const upstream = new Request(panelUrl(env, url.pathname), {
+      method: request.method,
+      headers,
+      body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
+      redirect: "manual",
+    })
+    return await fetch(upstream)
+  } catch (error) {
+    console.error("Panel upstream request failed", error)
+    return json({ error: "panel_unreachable", message: "The panel origin could not be reached." }, 502)
+  }
 }
 
 async function cachedConfig(request: Request, env: Env, workerSecret: string) {
@@ -74,6 +104,9 @@ async function handle(request: Request, env: Env) {
     return json({ error: "unauthorized" }, 401)
   }
 
+  const configurationError = workerConfigError(env)
+  if (configurationError) return configurationError
+
   if (request.method === "GET" && url.pathname === "/v1/config") {
     return cachedConfig(request, env, workerSecret)
   }
@@ -86,11 +119,21 @@ const orchestrator = {
   },
 
   async scheduled(_controller: SchedulerEvent, env: Env, ctx: WorkerExecutionContext) {
-    const url = `${env.PANEL_URL.replace(/\/$/, "")}/api/orchestrator/v1/reconcile`
-    ctx.waitUntil(fetch(url, {
-      method: "POST",
-      headers: { "x-orchestrator-secret": env.ORCHESTRATOR_SECRET },
-    }))
+    const configurationError = workerConfigError(env)
+    if (configurationError) return
+
+    const url = `${new URL(env.PANEL_URL!).origin}/api/orchestrator/v1/reconcile`
+    ctx.waitUntil((async () => {
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "x-orchestrator-secret": env.ORCHESTRATOR_SECRET! },
+        })
+        if (!response.ok) console.error("Panel reconciliation failed", { status: response.status })
+      } catch (error) {
+        console.error("Panel reconciliation request failed", error)
+      }
+    })())
   },
 }
 

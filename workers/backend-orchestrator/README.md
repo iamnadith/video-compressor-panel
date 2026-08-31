@@ -26,7 +26,7 @@ pnpm exec wrangler secret put ORCHESTRATOR_SECRET
 pnpm exec wrangler deploy
 ```
 
-`PANEL_URL` is the Vercel origin only, for example `https://compressor.example.com` (no `/api/orchestrator` suffix). `ORCHESTRATOR_SECRET` must match the value saved in Dashboard > Settings. `wrangler.jsonc` is the custom build/deployment configuration: it uses `src/index.ts`, the `video-pipeline-orchestrator` Worker name, and a one-minute cron. It does not set an explicit CPU limit, so it can deploy on Cloudflare's Free plan.
+`PANEL_URL` is the Vercel origin only, for example `https://compressor.example.com` (no `/api/orchestrator` suffix). `ORCHESTRATOR_SECRET` must match the value saved in Dashboard > Settings. `wrangler.jsonc` is the custom build/deployment configuration: it uses `src/index.ts`, the existing `video-compressor-panel` Worker name, and a one-minute cron. It does not set an explicit CPU limit, so it can deploy on Cloudflare's Free plan.
 
 For local development, copy `.env.example` to `.dev.vars` and run `pnpm exec wrangler dev`. `.dev.vars` is ignored by Git. The root `pnpm-workspace.yaml` already includes this Worker, so `pnpm --dir workers/backend-orchestrator run typecheck` is available from the repository root.
 

@@ -19,8 +19,12 @@ from typing import Any
 import requests
 
 
-AGENT_VERSION = "1.1.0"
+AGENT_VERSION = "1.2.0"
 DEFAULT_STATE_DIR = Path(".video-processor")
+DOWNLOAD_PROGRESS_END = 10.0
+PASS_ONE_PROGRESS_END = 52.5
+ENCODE_PROGRESS_END = 95.0
+UPLOAD_PROGRESS_END = 99.0
 STOP = threading.Event()
 MAX_RUNTIME_REACHED = threading.Event()
 
@@ -104,6 +108,16 @@ class DurableState:
             return None
 
     def instance_id(self) -> str:
+        configured = os.environ.get("PROCESSOR_INSTANCE_ID", "").strip()
+        if configured:
+            return configured
+
+        if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+            repository = os.environ.get("GITHUB_REPOSITORY_ID") or os.environ.get("GITHUB_REPOSITORY", "unknown")
+            workflow_ref = os.environ.get("GITHUB_WORKFLOW_REF") or os.environ.get("GITHUB_WORKFLOW", "video-processor")
+            workflow = workflow_ref.split("@", 1)[0]
+            return str(uuid.uuid5(uuid.NAMESPACE_URL, f"github-actions:{repository}:{workflow}"))
+
         session = self.load(self.session_file) or {}
         if session.get("instance_id"):
             return str(session["instance_id"])
@@ -171,7 +185,15 @@ class OrchestratorClient:
         return payload
 
     def register(self, instance_id: str) -> dict[str, Any]:
-        name = socket.gethostname()
+        github_repository = os.environ.get("GITHUB_REPOSITORY", "")
+        github_actions = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+        name = f"GitHub Actions · {github_repository}" if github_actions and github_repository else socket.gethostname()
+        metadata = {
+            "runtime": "github-actions",
+            "repository": github_repository,
+            "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
+            "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+        } if github_actions else {}
         data = self.request("POST", "/v1/workers/register", {
             "instance_id": instance_id,
             "display_name": name,
@@ -180,7 +202,7 @@ class OrchestratorClient:
             "architecture": platform.machine(),
             "agent_version": AGENT_VERSION,
             "capabilities": {"ffmpeg": True, "two_pass_x264": True},
-            "metadata": {},
+            "metadata": metadata,
         })
         self.worker_id = str(data["worker_id"])
         self.worker_token = str(data["worker_token"])
@@ -362,7 +384,7 @@ def compress_exact(
         "ffmpeg", "-y", "-i", str(input_path), "-vf", f"scale=-2:{max_res}",
         "-c:v", "libx264", "-b:v", f"{video_bitrate_kbps}k", "-pass", "1",
         "-passlogfile", passlog, "-preset", preset, "-an", "-f", "mp4", null_output,
-    ], duration, progress, 0, 50, lease, deadline)
+    ], duration, progress, DOWNLOAD_PROGRESS_END, PASS_ONE_PROGRESS_END - DOWNLOAD_PROGRESS_END, lease, deadline)
 
     progress.current_pass = "P2"
     ensure_running(deadline)
@@ -372,7 +394,7 @@ def compress_exact(
         "-passlogfile", passlog, "-preset", preset,
         "-maxrate", f"{video_bitrate_kbps}k", "-bufsize", f"{video_bitrate_kbps * 2}k",
         "-c:a", "aac", "-b:a", f"{audio_kbps}k", str(temporary_output),
-    ], duration, progress, 50, 50, lease, deadline)
+    ], duration, progress, PASS_ONE_PROGRESS_END, ENCODE_PROGRESS_END - PASS_ONE_PROGRESS_END, lease, deadline)
 
     if not temporary_output.exists() or temporary_output.stat().st_size <= 0:
         raise RuntimeError("FFmpeg did not produce a valid output file")
@@ -381,14 +403,24 @@ def compress_exact(
         item.unlink(missing_ok=True)
 
 
-def download(job: dict[str, Any], destination: Path, lease: LeaseKeeper, deadline: float | None = None) -> None:
+def download(
+    job: dict[str, Any],
+    destination: Path,
+    lease: LeaseKeeper,
+    progress: ProgressState,
+    deadline: float | None = None,
+) -> None:
     ensure_running(deadline)
     partial = destination.with_suffix(destination.suffix + ".part")
     existing = partial.stat().st_size if partial.exists() else 0
     expected_size = int(job["source_size"])
+    progress.stage = "claimed"
+    progress.current_pass = "DOWNLOAD"
+    progress.value = min(DOWNLOAD_PROGRESS_END, (existing / max(expected_size, 1)) * DOWNLOAD_PROGRESS_END)
     # A crash can happen after the final fsync and before the atomic rename.
     # Promote a complete part directly instead of issuing an invalid range.
     if existing == expected_size:
+        progress.value = DOWNLOAD_PROGRESS_END
         os.replace(partial, destination)
         return
     if existing > expected_size:
@@ -406,11 +438,13 @@ def download(job: dict[str, Any], destination: Path, lease: LeaseKeeper, deadlin
         if existing and response.status_code == 416:
             response.close()
             partial.unlink(missing_ok=True)
-            return download(job, destination, lease, deadline)
+            return download(job, destination, lease, progress, deadline)
         if existing and response.status_code == 200:
             existing = 0
+            progress.value = 0
         response.raise_for_status()
         mode = "ab" if existing and response.status_code == 206 else "wb"
+        downloaded = existing
         with partial.open(mode) as handle:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
                 ensure_running(deadline)
@@ -418,18 +452,33 @@ def download(job: dict[str, Any], destination: Path, lease: LeaseKeeper, deadlin
                     raise ApiError(lease.lost_status, "job_lease_lost")
                 if chunk:
                     handle.write(chunk)
+                    downloaded += len(chunk)
+                    progress.value = min(
+                        DOWNLOAD_PROGRESS_END,
+                        (downloaded / max(expected_size, 1)) * DOWNLOAD_PROGRESS_END,
+                    )
             handle.flush()
             os.fsync(handle.fileno())
     if partial.stat().st_size != expected_size:
         raise RuntimeError("Downloaded size does not match the claimed object")
+    progress.value = DOWNLOAD_PROGRESS_END
     os.replace(partial, destination)
 
 
 class LeaseAwareReader:
-    def __init__(self, handle, lease: LeaseKeeper, deadline: float | None = None):
+    def __init__(
+        self,
+        handle,
+        lease: LeaseKeeper,
+        progress: ProgressState,
+        deadline: float | None = None,
+    ):
         self.handle = handle
         self.lease = lease
+        self.progress = progress
         self.deadline = deadline
+        self.total = os.fstat(self.handle.fileno()).st_size
+        self.transferred = 0
 
     def __len__(self) -> int:
         return os.fstat(self.handle.fileno()).st_size
@@ -438,18 +487,31 @@ class LeaseAwareReader:
         ensure_running(self.deadline)
         if self.lease.claim_lost.is_set():
             raise ApiError(self.lease.lost_status, "job_lease_lost")
-        return self.handle.read(size)
+        data = self.handle.read(size)
+        self.transferred += len(data)
+        self.progress.value = min(
+            UPLOAD_PROGRESS_END,
+            ENCODE_PROGRESS_END
+            + (self.transferred / max(self.total, 1)) * (UPLOAD_PROGRESS_END - ENCODE_PROGRESS_END),
+        )
+        return data
 
     def __getattr__(self, name: str):
         return getattr(self.handle, name)
 
 
-def upload(job: dict[str, Any], source: Path, lease: LeaseKeeper, deadline: float | None = None) -> None:
+def upload(
+    job: dict[str, Any],
+    source: Path,
+    lease: LeaseKeeper,
+    progress: ProgressState,
+    deadline: float | None = None,
+) -> None:
     ensure_running(deadline)
     with source.open("rb") as handle:
         response = requests.put(
             job["upload_url"],
-            data=LeaseAwareReader(handle, lease, deadline),
+            data=LeaseAwareReader(handle, lease, progress, deadline),
             headers={
                 "Content-Type": job.get("upload_content_type", "video/mp4"),
                 "Content-Length": str(source.stat().st_size),
@@ -487,8 +549,13 @@ def process_job(
         lease.start()
         if not input_path.exists() and not output_path.exists():
             log(f"Downloading {job['source_name']}")
-            download(job, input_path, lease, deadline)
-            state.save_active({**active, "stage": "claimed"})
+            download(job, input_path, lease, progress, deadline)
+            state.save_active({
+                **active,
+                "stage": "claimed",
+                "progress": progress.value,
+                "current_pass": progress.current_pass,
+            })
 
         if not output_path.exists():
             log(f"Compressing {job['source_name']} with settings version {config['version']}")
@@ -498,13 +565,14 @@ def process_job(
         if lease.claim_lost.is_set():
             raise ApiError(409, "claim_lost")
         progress.stage = "uploading"
-        progress.current_pass = None
-        client.heartbeat(job, progress.value, None, "uploading")
+        progress.current_pass = "UPLOAD"
+        progress.value = max(progress.value, ENCODE_PROGRESS_END)
+        client.heartbeat(job, progress.value, progress.current_pass, "uploading")
         ensure_running(deadline)
         job.update(client.transfer(job))
         state.save_active({**active, "job": job, "stage": "uploading", "progress": progress.value})
         log(f"Uploading {job['output_name']}")
-        upload(job, output_path, lease, deadline)
+        upload(job, output_path, lease, progress, deadline)
         client.complete(job)
         log(f"Completed {job['source_name']}")
         shutil.rmtree(job_dir, ignore_errors=True)

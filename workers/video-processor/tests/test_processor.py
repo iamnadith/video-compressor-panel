@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).parents[1] / "processor.py"
@@ -22,6 +24,30 @@ class DurableStateTests(unittest.TestCase):
             first = processor.DurableState(root).instance_id()
             second = processor.DurableState(root).instance_id()
             self.assertEqual(first, second)
+
+    def test_github_actions_uses_one_stable_logical_worker(self):
+        environment = {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_REPOSITORY_ID": "123456",
+            "GITHUB_REPOSITORY": "owner/repository",
+            "GITHUB_WORKFLOW_REF": "owner/repository/.github/workflows/video-processor.yml@refs/heads/main",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            with tempfile.TemporaryDirectory() as first_directory, tempfile.TemporaryDirectory() as second_directory:
+                first = processor.DurableState(Path(first_directory)).instance_id()
+                second = processor.DurableState(Path(second_directory)).instance_id()
+                self.assertEqual(first, second)
+
+    def test_explicit_processor_instance_id_takes_priority(self):
+        with mock.patch.dict(os.environ, {
+            "GITHUB_ACTIONS": "true",
+            "PROCESSOR_INSTANCE_ID": "configured-worker",
+        }, clear=True):
+            with tempfile.TemporaryDirectory() as directory:
+                self.assertEqual(
+                    processor.DurableState(Path(directory)).instance_id(),
+                    "configured-worker",
+                )
 
     def test_active_checkpoint_is_atomic_and_readable(self):
         with tempfile.TemporaryDirectory() as directory:

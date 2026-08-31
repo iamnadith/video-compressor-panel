@@ -42,7 +42,7 @@ export function toWorkerConfig(settings: PipelineSettings & { updated_at: string
     },
     runtime: {
       lease_seconds: settings.lease_seconds,
-      heartbeat_interval_seconds: Math.max(10, Math.floor(settings.lease_seconds / 3)),
+      heartbeat_interval_seconds: Math.min(10, Math.max(5, Math.floor(settings.lease_seconds / 3))),
       idle_poll_seconds: 15,
     },
     formats: [".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv"],

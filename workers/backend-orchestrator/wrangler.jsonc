@@ -8,9 +8,6 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-29",
   "workers_dev": true,
-  "limits": {
-    "cpu_ms": 10
-  },
   "triggers": {
     "crons": ["* * * * *"]
   },

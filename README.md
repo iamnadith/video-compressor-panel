@@ -12,7 +12,7 @@ Cloudflare orchestrator <- processors -> FFmpeg -> R2 processed/
 ```
 
 - The panel is the only component with the PostgreSQL connection and R2 credentials.
-- The Cloudflare Worker only proxies bounded API requests and triggers reconciliation every minute, keeping its work below the 10 ms CPU limit.
+- The Cloudflare Worker only proxies bounded API requests and triggers reconciliation every minute, keeping its work within the Free-plan CPU limits.
 - A processor connects only to the orchestrator. It needs exactly `ORCHESTRATOR_URL` and `WORKER_SHARED_SECRET`.
 - Atomic database claims, leases, stable processor identities, object ETags, and durable local checkpoints prevent two healthy workers from processing the same source object.
 - Runtime compression, R2, and lease settings live in PostgreSQL. Processors receive current settings through the orchestrator, so changes do not require redeployment.

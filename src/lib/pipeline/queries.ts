@@ -60,6 +60,7 @@ export async function getWorkers() {
   const { data, error } = await createAdminClient()
     .from<DashboardWorker>("workers")
     .select("id,instance_id,display_name,hostname,platform,architecture,agent_version,state,last_seen_at,first_seen_at,last_error,current_job_id,capabilities")
+    .in("state", ["online", "idle", "busy"])
     .order("last_seen_at", { ascending: false })
   if (error) throw error
   return (data ?? []) as DashboardWorker[]

@@ -18,11 +18,11 @@ export default async function WorkersPage() {
   const workers = await getWorkers()
   return (
     <>
-      <PageHeader title="Workers" description="Processors identify themselves automatically from only the orchestrator URL and shared secret." />
+      <PageHeader title="Workers" description="Only currently connected processors are shown. Stale one-shot runners are removed automatically." />
       <Card>
         <CardHeader>
-          <CardTitle>Processor fleet</CardTitle>
-          <CardDescription>{workers.length} registered instances.</CardDescription>
+          <CardTitle>Active processor fleet</CardTitle>
+          <CardDescription>{workers.length} active instances.</CardDescription>
         </CardHeader>
         <CardContent>
           {workers.length ? (

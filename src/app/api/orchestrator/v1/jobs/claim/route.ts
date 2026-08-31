@@ -1,4 +1,5 @@
 import { getPipelineSettings, toWorkerConfig } from "@/lib/pipeline/config"
+import { isSupportedProcessorVersion, requiredProcessorVersion } from "@/lib/pipeline/compat"
 import { outputKey } from "@/lib/pipeline/keys"
 import { parseJson, workerIdentitySchema } from "@/lib/pipeline/schemas"
 import type { PipelineJob } from "@/lib/pipeline/types"
@@ -23,6 +24,18 @@ export async function POST(request: Request) {
   if (parsed.response) return parsed.response
   const invalidToken = await requireWorkerToken(request, parsed.data.worker_id)
   if (invalidToken) return invalidToken
+  const { data: worker, error: workerError } = await createAdminClient()
+    .from("workers")
+    .select("agent_version")
+    .eq("id", parsed.data.worker_id)
+    .single()
+  if (workerError || !worker) return Response.json({ error: "worker_not_found" }, { status: 404 })
+  if (!isSupportedProcessorVersion(worker.agent_version)) {
+    return Response.json({
+      error: "worker_upgrade_required",
+      minimum_agent_version: requiredProcessorVersion,
+    }, { status: 426 })
+  }
 
   const settings = await getPipelineSettings()
   const job = await claim(parsed.data.worker_id, settings.lease_seconds)

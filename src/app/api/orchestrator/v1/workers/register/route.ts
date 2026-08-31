@@ -1,4 +1,5 @@
 import { getPipelineSettings, toWorkerConfig } from "@/lib/pipeline/config"
+import { isSupportedProcessorVersion, requiredProcessorVersion } from "@/lib/pipeline/compat"
 import { parseJson, registerWorkerSchema } from "@/lib/pipeline/schemas"
 import { requireOrchestrator, requireWorkerSecret } from "@/lib/secrets"
 import { createAdminClient } from "@/lib/db-client"
@@ -11,6 +12,12 @@ export async function POST(request: Request) {
   if (invalidWorker) return invalidWorker
   const parsed = await parseJson(request, registerWorkerSchema)
   if (parsed.response) return parsed.response
+  if (!isSupportedProcessorVersion(parsed.data.agent_version)) {
+    return Response.json({
+      error: "worker_upgrade_required",
+      minimum_agent_version: requiredProcessorVersion,
+    }, { status: 426 })
+  }
 
   const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null
   const { data: worker, error } = await createAdminClient().rpc("register_pipeline_worker", {

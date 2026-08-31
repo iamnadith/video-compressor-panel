@@ -8,8 +8,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-29",
   "workers_dev": true,
-  "vars": {
-    "PANEL_URL": "https://video-compressor-panel.vercel.app"
+  "secrets": {
+    "required": ["ORCHESTRATOR_SECRET"]
   },
   "triggers": {
     "crons": ["* * * * *"]

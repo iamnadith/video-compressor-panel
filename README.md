@@ -43,12 +43,12 @@ The source is in `workers/backend-orchestrator`. Deploy it to Cloudflare Workers
 
 ```powershell
 cd workers/backend-orchestrator
-pnpm exec wrangler deploy
-pnpm exec wrangler secret put ORCHESTRATOR_SECRET
-pnpm exec wrangler deploy
+$env:PANEL_URL = "https://your-panel.example.com"
+$env:ORCHESTRATOR_SECRET = "the-secret-from-dashboard-settings"
+pnpm run deploy
 ```
 
-`PANEL_URL` is the public Vercel origin configured in `wrangler.jsonc` as a non-secret variable. The orchestrator secret must match the value entered in Dashboard > Settings. The deployed Worker is `video-compressor-panel`; the cron in `wrangler.jsonc` runs every minute. The gateway caches only non-secret processor configuration for 60 seconds.
+For Cloudflare Workers Builds, add `PANEL_URL` and encrypted `ORCHESTRATOR_SECRET` under Build Variables and Secrets. The deploy script promotes them to runtime bindings securely; it never bundles the secret into Worker source. The orchestrator secret must match the value entered in Dashboard > Settings. The deployed Worker is `video-compressor-panel`; the cron in `wrangler.jsonc` runs every minute. The gateway caches only non-secret processor configuration for 60 seconds.
 
 The Worker build entrypoint is `workers/backend-orchestrator/src/index.ts`, configured by `workers/backend-orchestrator/wrangler.jsonc`; deploy commands must be run from `workers/backend-orchestrator` (or passed that directory explicitly).
 

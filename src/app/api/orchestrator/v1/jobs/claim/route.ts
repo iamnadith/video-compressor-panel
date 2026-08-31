@@ -1,5 +1,4 @@
 import { getPipelineSettings, toWorkerConfig } from "@/lib/pipeline/config"
-import { reconcilePipeline } from "@/lib/pipeline/reconcile"
 import { parseJson, workerIdentitySchema } from "@/lib/pipeline/schemas"
 import type { PipelineJob } from "@/lib/pipeline/types"
 import { createJobTransferUrls, headObject } from "@/lib/r2"
@@ -25,12 +24,11 @@ export async function POST(request: Request) {
   if (invalidToken) return invalidToken
 
   const settings = await getPipelineSettings()
-  let job = await claim(parsed.data.worker_id, settings.lease_seconds)
+  const job = await claim(parsed.data.worker_id, settings.lease_seconds)
   if (!job) {
-    await reconcilePipeline("worker-empty-queue")
-    job = await claim(parsed.data.worker_id, settings.lease_seconds)
-  }
-  if (!job) {
+    // Discovery and lease recovery run from the single Cloudflare cron path.
+    // Do not make every idle processor start the same R2 scan: with hundreds
+    // of workers that creates a thundering herd against PostgreSQL and R2.
     return Response.json({ job: null, config: toWorkerConfig(settings) })
   }
 

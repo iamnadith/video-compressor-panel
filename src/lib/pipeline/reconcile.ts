@@ -7,6 +7,8 @@ import { deleteClaimedObject, getR2Config, listPrefixPage } from "@/lib/r2"
 import { createAdminClient } from "@/lib/db-client"
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv"])
+type ClaimedJob = { id: string; state: string; claimed_key: string | null }
+type ProcessedJob = { id: string; state: string; assigned_worker_id: string | null; claimed_key: string | null; output_key: string | null }
 
 function relativeKey(key: string, prefix: string) {
   const normalized = `${prefix.replace(/\/$/, "")}/`
@@ -23,6 +25,12 @@ function outputKey(sourceKey: string, sourceEtag: string, ingest: string, proces
 
 async function readPrefixPage(prefix: string) {
   const admin = createAdminClient()
+  // Settings can change the prefixes. Initialize the cursor lazily so a
+  // renamed prefix is still audited instead of failing with a missing row.
+  const { error: initializeError } = await admin
+    .from("reconcile_cursors")
+    .upsert({ prefix }, { onConflict: "prefix", ignoreDuplicates: true })
+  if (initializeError) throw initializeError
   const { data: cursor, error: cursorError } = await admin
     .from("reconcile_cursors")
     .select("continuation_token,completed_cycles")
@@ -133,13 +141,19 @@ export async function reconcilePipeline(triggerSource: string) {
       readPrefixPage(settings.processed_prefix),
     ])
 
-    for (const object of claimed.page.objects) {
-      const { data: job, error } = await admin
+    const claimedKeys = claimed.page.objects.map((object) => object.key)
+    const claimedJobsResult = claimedKeys.length
+      ? await admin
         .from("jobs")
-        .select("id,state")
-        .eq("claimed_key", object.key)
-        .maybeSingle()
-      if (error) throw error
+        .select("id,state,claimed_key")
+        .in("claimed_key", claimedKeys)
+      : { data: [] as ClaimedJob[], error: null }
+    if (claimedJobsResult.error) throw claimedJobsResult.error
+    const claimedJobs = (claimedJobsResult.data ?? []) as ClaimedJob[]
+    const claimedJobsByKey = new Map((claimedJobs ?? []).map((job) => [job.claimed_key, job]))
+
+    for (const object of claimed.page.objects) {
+      const job = claimedJobsByKey.get(object.key)
       if (job?.state === "claiming") {
         const { error: repairError } = await admin
           .from("jobs")
@@ -159,13 +173,19 @@ export async function reconcilePipeline(triggerSource: string) {
       claimed.completedCycles,
     )
 
-    for (const object of processed.page.objects) {
-      const { data: job, error } = await admin
+    const processedKeys = processed.page.objects.map((object) => object.key)
+    const processedJobsResult = processedKeys.length
+      ? await admin
         .from("jobs")
-        .select("id,state,assigned_worker_id")
-        .eq("output_key", object.key)
-        .maybeSingle()
-      if (error) throw error
+        .select("id,state,assigned_worker_id,claimed_key,output_key")
+        .in("output_key", processedKeys)
+      : { data: [] as ProcessedJob[], error: null }
+    if (processedJobsResult.error) throw processedJobsResult.error
+    const processedJobs = (processedJobsResult.data ?? []) as ProcessedJob[]
+    const processedJobsByKey = new Map((processedJobs ?? []).map((job) => [job.output_key, job]))
+
+    for (const object of processed.page.objects) {
+      const job = processedJobsByKey.get(object.key)
       if (job && job.state !== "completed" && job.state !== "cancelled") {
         const { error: repairError } = await admin
           .from("jobs")

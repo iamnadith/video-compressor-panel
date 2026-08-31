@@ -8,10 +8,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: video-processor-${{ github.repository }}
-  cancel-in-progress: false
-
 jobs:
   process:
     runs-on: ubuntu-latest
@@ -89,5 +85,5 @@ jobs:
 
       - name: Run processor
         # Keep polling for the full window, including while the queue is
-        # temporarily empty. The concurrency group serializes scheduled runs.
+        # temporarily empty. Database claims and leases make parallel runs safe.
         run: python workers/video-processor/processor.py --max-runtime 21000

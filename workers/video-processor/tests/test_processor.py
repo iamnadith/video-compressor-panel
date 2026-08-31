@@ -25,18 +25,23 @@ class DurableStateTests(unittest.TestCase):
             second = processor.DurableState(root).instance_id()
             self.assertEqual(first, second)
 
-    def test_github_actions_uses_one_stable_logical_worker(self):
+    def test_github_actions_run_has_stable_unique_worker(self):
         environment = {
             "GITHUB_ACTIONS": "true",
             "GITHUB_REPOSITORY_ID": "123456",
             "GITHUB_REPOSITORY": "owner/repository",
             "GITHUB_WORKFLOW_REF": "owner/repository/.github/workflows/video-processor.yml@refs/heads/main",
+            "GITHUB_RUN_ID": "1001",
         }
         with mock.patch.dict(os.environ, environment, clear=True):
             with tempfile.TemporaryDirectory() as first_directory, tempfile.TemporaryDirectory() as second_directory:
                 first = processor.DurableState(Path(first_directory)).instance_id()
                 second = processor.DurableState(Path(second_directory)).instance_id()
                 self.assertEqual(first, second)
+
+            with mock.patch.dict(os.environ, {**environment, "GITHUB_RUN_ID": "1002"}, clear=True):
+                with tempfile.TemporaryDirectory() as directory:
+                    self.assertNotEqual(first, processor.DurableState(Path(directory)).instance_id())
 
     def test_explicit_processor_instance_id_takes_priority(self):
         with mock.patch.dict(os.environ, {

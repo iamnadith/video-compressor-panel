@@ -116,7 +116,8 @@ class DurableState:
             repository = os.environ.get("GITHUB_REPOSITORY_ID") or os.environ.get("GITHUB_REPOSITORY", "unknown")
             workflow_ref = os.environ.get("GITHUB_WORKFLOW_REF") or os.environ.get("GITHUB_WORKFLOW", "video-processor")
             workflow = workflow_ref.split("@", 1)[0]
-            return str(uuid.uuid5(uuid.NAMESPACE_URL, f"github-actions:{repository}:{workflow}"))
+            run_id = os.environ.get("GITHUB_RUN_ID") or "unknown-run"
+            return str(uuid.uuid5(uuid.NAMESPACE_URL, f"github-actions:{repository}:{workflow}:{run_id}"))
 
         session = self.load(self.session_file) or {}
         if session.get("instance_id"):

@@ -195,7 +195,7 @@ begin
     agent_version, capabilities, state, last_seen_at, last_ip, metadata
   ) values (
     p_instance_id, p_display_name, p_hostname, p_platform, p_architecture,
-    p_agent_version, coalesce(p_capabilities, '{}'::jsonb), 'online', now(), p_last_ip,
+    p_agent_version, coalesce(p_capabilities, '{}'::jsonb), 'online'::public.worker_state, now(), p_last_ip,
     coalesce(p_metadata, '{}'::jsonb)
   )
   on conflict (instance_id) do update set
@@ -208,7 +208,10 @@ begin
     last_seen_at = now(),
     last_ip = excluded.last_ip,
     metadata = excluded.metadata,
-    state = case when workers.state = 'disabled' then 'disabled' else 'online' end
+    state = case
+      when workers.state = 'disabled'::public.worker_state then 'disabled'::public.worker_state
+      else 'online'::public.worker_state
+    end
   returning * into v_worker;
 
   return v_worker;

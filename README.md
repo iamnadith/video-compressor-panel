@@ -24,22 +24,23 @@ Requirements: Node.js 20+, pnpm 10.20+, Python 3.9+, FFmpeg/FFprobe, any compati
 ```powershell
 pnpm install
 Copy-Item .env.example .env.local
+pnpm run migrate
 pnpm dev
 ```
 
-Apply [the initial migration](migrations/001_initial_pipeline.sql) to PostgreSQL, open `http://localhost:3000/setup`, and create the first administrator. The authenticated application is rooted at `/dashboard`; there is no `/panel` route.
+The migration runner applies every numbered SQL migration transactionally, records checksums, and serializes concurrent runs with a PostgreSQL advisory lock. After it completes, open `http://localhost:3000/setup` and create the first administrator. The authenticated application is rooted at `/dashboard`; there is no `/panel` route.
 
 Configure this single Vercel environment variable from `.env.example`:
 
 - `DATABASE_URL` (use `?sslmode=disable` when connecting through a transaction pooler that requires SSL disabled). The panel also strips libpq SSL query options and enforces `ssl: false` in `pg`.
 
-The custom Next.js deployment uses the repository root as its Vercel project root, `pnpm install` for dependencies, `pnpm build` for the build command, and `pnpm start` for a self-hosted production server. No panel URL prefix or `/panel` route is required; the dashboard URL is `/dashboard`.
+The custom Next.js deployment uses the repository root as its Vercel project root, `pnpm install` for dependencies, `pnpm build` for the build command, and `pnpm start` for a self-hosted production server. `pnpm build` runs the migration runner before `next build`, so a deployment stops if its database schema cannot be safely upgraded. No panel URL prefix or `/panel` route is required; the dashboard URL is `/dashboard`.
 
 R2 credentials and runtime gateway settings are entered in Dashboard > Settings and stored in PostgreSQL. R2 credentials are used only by the panel; processors receive signed object URLs and current compression settings. Worker and orchestrator secrets are stored as salted hashes; changing the processor secret invalidates existing processor sessions within the short signing-key cache window.
 
 ## Cloudflare backend orchestrator
 
-The source is in `workers/backend-orchestrator`. Deploy it to Cloudflare Workers and set only these encrypted Worker secrets:
+The source is in `workers/backend-orchestrator`. Deploy it to Cloudflare Workers with these deployment values:
 
 ```powershell
 cd workers/backend-orchestrator

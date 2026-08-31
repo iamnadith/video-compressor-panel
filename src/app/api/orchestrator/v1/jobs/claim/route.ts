@@ -2,7 +2,7 @@ import { getPipelineSettings, toWorkerConfig } from "@/lib/pipeline/config"
 import { reconcilePipeline } from "@/lib/pipeline/reconcile"
 import { parseJson, workerIdentitySchema } from "@/lib/pipeline/schemas"
 import type { PipelineJob } from "@/lib/pipeline/types"
-import { createJobTransferUrls, ensureClaimedObject } from "@/lib/r2"
+import { createJobTransferUrls, headObject } from "@/lib/r2"
 import { requireOrchestrator } from "@/lib/secrets"
 import { createAdminClient } from "@/lib/db-client"
 import { requireWorkerToken } from "@/lib/worker-token"
@@ -34,24 +34,31 @@ export async function POST(request: Request) {
     return Response.json({ job: null, config: toWorkerConfig(settings) })
   }
 
-  if (!job.claim_token || !job.claimed_key || !job.output_key) {
+  if (!job.claim_token || !job.output_key) {
     return Response.json({ error: "invalid_claim_state" }, { status: 500 })
   }
 
   try {
-    await ensureClaimedObject(job.source_key, job.claimed_key, Number(job.source_size))
+    const source = await headObject(job.source_key)
+    if (!source || source.ContentLength !== Number(job.source_size)) {
+      throw new Error("Source object verification failed.")
+    }
+
+    // The database lease is the atomic claim. Keep the multi-gigabyte object in
+    // place and sign it directly instead of blocking this request on an R2 copy.
+    const inputKey = job.source_key
     const admin = createAdminClient()
     const { data: ready, error: readyError } = await admin.rpc("mark_pipeline_job_ready", {
       p_job_id: job.id,
       p_worker_id: parsed.data.worker_id,
       p_claim_token: job.claim_token,
-      p_claimed_key: job.claimed_key,
+      p_claimed_key: inputKey,
       p_output_key: job.output_key,
     })
     if (readyError) throw readyError
     if (!ready) throw new Error("Claim ownership changed before storage preparation completed.")
 
-    const transfer = await createJobTransferUrls(job.claimed_key, job.output_key)
+    const transfer = await createJobTransferUrls(inputKey, job.output_key)
     return Response.json({
       job: {
         id: job.id,

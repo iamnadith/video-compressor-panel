@@ -1,7 +1,6 @@
 import "server-only"
 
 import {
-  CopyObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
@@ -109,10 +108,6 @@ export async function listPrefixPage(
   }
 }
 
-function copySource(bucket: string, key: string) {
-  return `${bucket}/${key.split("/").map(encodeURIComponent).join("/")}`
-}
-
 function isNotFound(error: unknown): boolean {
   if (!error || typeof error !== "object") return false
   const candidate = error as { name?: string; $metadata?: { httpStatusCode?: number } }
@@ -129,34 +124,11 @@ export async function headObject(key: string) {
   }
 }
 
-export async function ensureClaimedObject(sourceKey: string, claimedKey: string, expectedSize: number) {
-  const { client, config } = await getR2Client()
-  let claimed = await headObject(claimedKey)
-
-  if (!claimed) {
-    await client.send(new CopyObjectCommand({
-      Bucket: config.r2Bucket,
-      CopySource: copySource(config.r2Bucket, sourceKey),
-      Key: claimedKey,
-      MetadataDirective: "COPY",
-    }))
-    claimed = await headObject(claimedKey)
-  }
-
-  if (!claimed || claimed.ContentLength !== expectedSize) {
-    throw new Error("Claimed object verification failed.")
-  }
-
-  if (await headObject(sourceKey)) {
-      await client.send(new DeleteObjectCommand({ Bucket: config.r2Bucket, Key: sourceKey }))
-  }
-}
-
-export async function createJobTransferUrls(claimedKey: string, outputKey: string) {
+export async function createJobTransferUrls(inputKey: string, outputKey: string) {
   const { client, config } = await getR2Client()
   const expiresIn = 60 * 60
   const [downloadUrl, uploadUrl] = await Promise.all([
-    getSignedUrl(client, new GetObjectCommand({ Bucket: config.r2Bucket, Key: claimedKey }), { expiresIn }),
+    getSignedUrl(client, new GetObjectCommand({ Bucket: config.r2Bucket, Key: inputKey }), { expiresIn }),
     getSignedUrl(client, new PutObjectCommand({
       Bucket: config.r2Bucket,
       Key: outputKey,

@@ -184,6 +184,13 @@ export async function reconcilePipeline(triggerSource: string) {
         }
         repaired += 1
       }
+      if (job?.claimed_key && job.state !== "cancelled") {
+        try {
+          await deleteClaimedObject(job.claimed_key)
+        } catch {
+          // Keep reconciliation durable; a later cycle retries completed-input cleanup.
+        }
+      }
     }
     await commitPrefixPage(
       settings.processed_prefix,

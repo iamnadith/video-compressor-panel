@@ -234,23 +234,29 @@ export async function reconcilePipeline(triggerSource: string) {
       processed.completedCycles,
     )
 
-    await admin.from("reconcile_runs").update({
-      discovered_count: discovered,
-      repaired_count: repaired,
-      requeued_count: requeued,
-      status: "completed",
-      completed_at: new Date().toISOString(),
-    }).eq("id", run.id)
+    await query(
+      `update public.reconcile_runs
+       set discovered_count = $1,
+           repaired_count = $2,
+           requeued_count = $3,
+           status = 'completed',
+           completed_at = now()
+       where id = $4`,
+      [discovered, repaired, requeued, run.id],
+    )
 
     await admin.rpc("finish_pipeline_reconcile", { p_lease_token: leaseToken })
 
     return { discovered, repaired, requeued, settingsVersion: settings.updated_at }
   } catch (error) {
-    await admin.from("reconcile_runs").update({
-      status: "failed",
-      error_message: error instanceof Error ? error.message.slice(0, 2000) : "Unknown error",
-      completed_at: new Date().toISOString(),
-    }).eq("id", run.id)
+    await query(
+      `update public.reconcile_runs
+       set status = 'failed',
+           error_message = $1,
+           completed_at = now()
+       where id = $2`,
+      [error instanceof Error ? error.message.slice(0, 2000) : "Unknown error", run.id],
+    )
     await admin.rpc("finish_pipeline_reconcile", { p_lease_token: leaseToken })
     throw error
   }

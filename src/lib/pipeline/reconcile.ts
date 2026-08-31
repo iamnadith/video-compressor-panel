@@ -39,19 +39,19 @@ async function readPrefixPage(prefix: string) {
   if (cursorError) throw cursorError
 
   const page = await listPrefixPage(prefix, cursor?.continuation_token ?? undefined)
-  return { page, completedCycles: cursor?.completed_cycles ?? 0 }
+  return { page, completedCycles: BigInt(cursor?.completed_cycles ?? 0) }
 }
 
 async function commitPrefixPage(
   prefix: string,
   page: Awaited<ReturnType<typeof listPrefixPage>>,
-  completedCycles: number,
+  completedCycles: bigint,
 ) {
   const admin = createAdminClient()
   const { error: updateError } = await admin.from("reconcile_cursors").upsert({
     prefix,
     continuation_token: page.nextContinuationToken ?? null,
-    completed_cycles: completedCycles + (page.cycleComplete ? 1 : 0),
+    completed_cycles: (completedCycles + BigInt(page.cycleComplete ? 1 : 0)).toString(),
     updated_at: new Date().toISOString(),
   })
   if (updateError) throw updateError
@@ -60,7 +60,7 @@ async function commitPrefixPage(
 export async function reconcilePipeline(triggerSource: string) {
   const admin = createAdminClient()
   const { data: leaseToken, error: leaseError } = await admin
-    .rpc("begin_pipeline_reconcile", { p_lease_seconds: 240 })
+    .rpc("begin_pipeline_reconcile", { p_lease_seconds: 900 })
   if (leaseError) throw leaseError
   if (!leaseToken) return { skipped: true, reason: "reconcile_already_running" }
 
@@ -69,6 +69,18 @@ export async function reconcilePipeline(triggerSource: string) {
   let run: { id: number }
   let requeued = 0
   try {
+    const staleBefore = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+    const { error: staleRunsError } = await admin
+      .from("reconcile_runs")
+      .update({
+        status: "failed",
+        error_message: "Reconciliation run did not finish and was recovered by a later audit.",
+        completed_at: new Date().toISOString(),
+      })
+      .eq("status", "running")
+      .lt("started_at", staleBefore)
+    if (staleRunsError) throw staleRunsError
+
     const { data: expired, error: expiredError } = await admin
       .rpc("reconcile_expired_pipeline_leases")
     if (expiredError) throw expiredError

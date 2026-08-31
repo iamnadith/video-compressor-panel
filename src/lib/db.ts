@@ -6,7 +6,7 @@ import { Pool, type QueryResultRow } from "pg"
 import { getServerEnv } from "@/lib/env"
 
 type DbResult<T = any> = { data: T | null; error: Error | null; count?: number | null }
-type Filter = { column: string; operator: "=" | "ANY"; value: unknown }
+type Filter = { column: string; operator: "=" | "ANY" | "<"; value: unknown }
 type SelectOptions = { count?: "exact"; head?: boolean }
 
 const TABLES = new Set([
@@ -187,6 +187,11 @@ class QueryBuilder<T extends QueryResultRow = Record<string, any>> implements Pr
     return this
   }
 
+  lt(column: string, value: unknown) {
+    this.filters.push({ column, operator: "<", value })
+    return this
+  }
+
   in(column: string, value: unknown[]) {
     this.filters.push({ column, operator: "ANY", value })
     return this
@@ -235,6 +240,8 @@ class QueryBuilder<T extends QueryResultRow = Record<string, any>> implements Pr
     for (const filter of this.filters) {
       if (filter.operator === "ANY") {
         clauses.push(`${identifier(this.table)}.${identifier(filter.column)}::text = ANY($${index}::text[])`)
+      } else if (filter.operator === "<") {
+        clauses.push(`${identifier(this.table)}.${identifier(filter.column)} < $${index}`)
       } else clauses.push(`${identifier(this.table)}.${identifier(filter.column)} = $${index}`)
       values.push(filter.value)
       index += 1

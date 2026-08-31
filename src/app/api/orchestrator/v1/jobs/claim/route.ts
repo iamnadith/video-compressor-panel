@@ -1,4 +1,5 @@
 import { getPipelineSettings, toWorkerConfig } from "@/lib/pipeline/config"
+import { outputKey } from "@/lib/pipeline/keys"
 import { parseJson, workerIdentitySchema } from "@/lib/pipeline/schemas"
 import type { PipelineJob } from "@/lib/pipeline/types"
 import { createJobTransferUrls, headObject } from "@/lib/r2"
@@ -32,11 +33,19 @@ export async function POST(request: Request) {
     return Response.json({ job: null, config: toWorkerConfig(settings) })
   }
 
-  if (!job.claim_token || !job.output_key) {
+  if (!job.claim_token) {
     return Response.json({ error: "invalid_claim_state" }, { status: 500 })
   }
 
   try {
+    // Normalize jobs discovered before the filename contract was corrected.
+    // The receiving machine gets the original basename with only the output
+    // container extension, never an internal identity suffix.
+    const normalizedOutputKey = outputKey(
+      job.source_key,
+      settings.ingest_prefix,
+      settings.processed_prefix,
+    )
     const source = await headObject(job.source_key)
     let inputKey = job.source_key
     let input = source
@@ -56,19 +65,19 @@ export async function POST(request: Request) {
       p_worker_id: parsed.data.worker_id,
       p_claim_token: job.claim_token,
       p_claimed_key: inputKey,
-      p_output_key: job.output_key,
+      p_output_key: normalizedOutputKey,
     })
     if (readyError) throw readyError
     if (!ready) throw new Error("Claim ownership changed before storage preparation completed.")
 
-    const transfer = await createJobTransferUrls(inputKey, job.output_key)
+    const transfer = await createJobTransferUrls(inputKey, normalizedOutputKey)
     return Response.json({
       job: {
         id: job.id,
         claim_token: job.claim_token,
         source_name: job.source_key.split("/").at(-1),
         source_size: Number(job.source_size),
-        output_name: job.output_key.split("/").at(-1),
+        output_name: normalizedOutputKey.split("/").at(-1),
         download_url: transfer.downloadUrl,
         upload_url: transfer.uploadUrl,
         upload_content_type: "video/mp4",

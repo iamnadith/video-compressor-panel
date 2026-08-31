@@ -4,6 +4,7 @@ import path from "node:path"
 
 import { query } from "@/lib/db"
 import { getPipelineSettings } from "@/lib/pipeline/config"
+import { outputKey } from "@/lib/pipeline/keys"
 import { deleteClaimedObject, getR2Config, listPrefixPage } from "@/lib/r2"
 import { createAdminClient } from "@/lib/db-client"
 
@@ -14,14 +15,6 @@ type ProcessedJob = { id: string; state: string; assigned_worker_id: string | nu
 function relativeKey(key: string, prefix: string) {
   const normalized = `${prefix.replace(/\/$/, "")}/`
   return key.startsWith(normalized) ? key.slice(normalized.length) : key
-}
-
-function outputKey(sourceKey: string, sourceEtag: string, ingest: string, processed: string) {
-  const relative = relativeKey(sourceKey, ingest)
-  const extension = path.posix.extname(relative)
-  const stem = extension ? relative.slice(0, -extension.length) : relative
-  const identity = sourceEtag.replace(/[^a-zA-Z0-9]/g, "").slice(0, 10) || "object"
-  return `${processed.replace(/\/$/, "")}/${stem}--${identity}.mp4`
 }
 
 async function readPrefixPage(prefix: string) {
@@ -123,7 +116,6 @@ export async function reconcilePipeline(triggerSource: string) {
           claimed_key: `${settings.claimed_prefix.replace(/\/$/, "")}/${relative}`,
           output_key: outputKey(
             object.key,
-            etag,
             settings.ingest_prefix,
             settings.processed_prefix,
           ),

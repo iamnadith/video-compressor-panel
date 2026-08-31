@@ -10,7 +10,15 @@ import { createAdminClient } from "@/lib/db-client"
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv"])
 type ClaimedJob = { id: string; state: string; claimed_key: string | null }
-type ProcessedJob = { id: string; state: string; assigned_worker_id: string | null; claimed_key: string | null; output_key: string | null }
+type ProcessedJob = {
+  id: string
+  state: string
+  assigned_worker_id: string | null
+  claimed_key: string | null
+  output_key: string | null
+  source_size: number
+  settings_snapshot: Record<string, string | number> | null
+}
 
 function relativeKey(key: string, prefix: string) {
   const normalized = `${prefix.replace(/\/$/, "")}/`
@@ -180,7 +188,7 @@ export async function reconcilePipeline(triggerSource: string) {
     const processedJobsResult = processedKeys.length
       ? await admin
         .from("jobs")
-        .select("id,state,assigned_worker_id,claimed_key,output_key")
+        .select("id,state,assigned_worker_id,claimed_key,output_key,source_size,settings_snapshot")
         .in("output_key", processedKeys)
       : { data: [] as ProcessedJob[], error: null }
     if (processedJobsResult.error) throw processedJobsResult.error
@@ -189,7 +197,15 @@ export async function reconcilePipeline(triggerSource: string) {
 
     for (const object of processed.page.objects) {
       const job = processedJobsByKey.get(object.key)
-      if (job && job.state !== "completed" && job.state !== "cancelled") {
+      const targetSizeMb = Number(job?.settings_snapshot?.target_size_mb ?? settings.target_size_mb)
+      const compressionExpected = Boolean(
+        job
+        && Number.isFinite(targetSizeMb)
+        && Number(job.source_size) > targetSizeMb * 1024 * 1024,
+      )
+      const outputVerified = !compressionExpected || object.size < Number(job?.source_size)
+      const outputAccepted = Boolean(job && outputVerified && job.state !== "cancelled")
+      if (job && outputVerified && job.state !== "completed" && job.state !== "cancelled") {
         const { error: repairError } = await admin
           .from("jobs")
           .update({
@@ -212,7 +228,7 @@ export async function reconcilePipeline(triggerSource: string) {
         }
         repaired += 1
       }
-      if (job?.claimed_key && job.state !== "cancelled") {
+      if (job?.claimed_key && outputAccepted) {
         try {
           await deleteClaimedObject(job.claimed_key, object.key)
         } catch {

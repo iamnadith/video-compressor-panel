@@ -15,7 +15,7 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
   const admin = createAdminClient()
   const { data: job, error: jobError } = await admin
     .from("jobs")
-    .select("output_key,claimed_key")
+    .select("output_key,claimed_key,source_size,settings_snapshot")
     .eq("id", jobId)
     .eq("assigned_worker_id", parsed.data.worker_id)
     .eq("claim_token", parsed.data.claim_token)
@@ -25,6 +25,24 @@ export async function POST(request: Request, context: { params: Promise<{ jobId:
   const output = await headObject(job.output_key)
   if (!output || !output.ContentLength) {
     return Response.json({ error: "output_not_verified" }, { status: 409 })
+  }
+
+  const targetSizeMb = Number(job.settings_snapshot?.target_size_mb)
+  const compressionExpected = Number.isFinite(targetSizeMb)
+    && Number(job.source_size) > targetSizeMb * 1024 * 1024
+  if (compressionExpected && output.ContentLength >= Number(job.source_size)) {
+    const { error: failError } = await admin.rpc("fail_pipeline_job", {
+      p_job_id: jobId,
+      p_worker_id: parsed.data.worker_id,
+      p_claim_token: parsed.data.claim_token,
+      p_error_code: "output_not_compressed",
+      p_error_message: "The encoded output is not smaller than the source file.",
+      p_retryable: true,
+    })
+    if (failError) {
+      return Response.json({ error: "output_validation_failed", message: failError.message }, { status: 500 })
+    }
+    return Response.json({ error: "output_not_compressed" }, { status: 409 })
   }
 
   const { data, error } = await admin.rpc("complete_pipeline_job", {

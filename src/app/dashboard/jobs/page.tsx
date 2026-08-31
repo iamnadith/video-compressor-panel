@@ -10,6 +10,7 @@ import { formatBytes, formatDate, formatPercent } from "@/lib/format"
 import { requireUser } from "@/lib/auth"
 import { getJobs } from "@/lib/pipeline/queries"
 import type { DashboardJob } from "@/lib/pipeline/queries"
+import { RetryJobForm } from "@/app/dashboard/jobs/retry-job-form"
 
 export const metadata = { title: "Jobs" }
 
@@ -27,7 +28,7 @@ export default async function JobsPage() {
         <CardContent>
           {jobs.length ? (
             <Table>
-              <TableHeader><TableRow><TableHead>Source</TableHead><TableHead>Status</TableHead><TableHead>Progress</TableHead><TableHead>Input</TableHead><TableHead>Output</TableHead><TableHead>Attempt</TableHead><TableHead>Updated</TableHead></TableRow></TableHeader>
+              <TableHeader><TableRow><TableHead>Source</TableHead><TableHead>Status</TableHead><TableHead>Progress</TableHead><TableHead>Input</TableHead><TableHead>Output</TableHead><TableHead>Attempt</TableHead><TableHead>Updated</TableHead><TableHead>Action</TableHead></TableRow></TableHeader>
               <TableBody>
                 {jobs.map((job: DashboardJob) => (
                   <TableRow key={job.id}>
@@ -38,6 +39,7 @@ export default async function JobsPage() {
                     <TableCell>{job.output_size ? formatBytes(Number(job.output_size)) : "—"}</TableCell>
                     <TableCell>{job.attempt_count}/{job.max_attempts}</TableCell>
                     <TableCell>{formatDate(job.updated_at)}</TableCell>
+                    <TableCell>{job.state === "failed" || (job.state === "cancelled" && !job.error_message?.includes("superseded")) ? <RetryJobForm jobId={job.id} /> : "—"}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

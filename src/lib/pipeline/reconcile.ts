@@ -16,6 +16,7 @@ type ProcessedJob = {
   assigned_worker_id: string | null
   claimed_key: string | null
   output_key: string | null
+  output_etag: string | null
   source_size: number
   settings_snapshot: Record<string, string | number> | null
 }
@@ -188,7 +189,7 @@ export async function reconcilePipeline(triggerSource: string) {
     const processedJobsResult = processedKeys.length
       ? await admin
         .from("jobs")
-        .select("id,state,assigned_worker_id,claimed_key,output_key,source_size,settings_snapshot")
+        .select("id,state,assigned_worker_id,claimed_key,output_key,output_etag,source_size,settings_snapshot")
         .in("output_key", processedKeys)
       : { data: [] as ProcessedJob[], error: null }
     if (processedJobsResult.error) throw processedJobsResult.error
@@ -204,7 +205,8 @@ export async function reconcilePipeline(triggerSource: string) {
         && Number(job.source_size) > targetSizeMb * 1024 * 1024,
       )
       const outputVerified = !compressionExpected || object.size < Number(job?.source_size)
-      const outputAccepted = Boolean(job && outputVerified && job.state !== "cancelled")
+      const outputMatchesJob = Boolean(job?.output_etag && job.output_etag === object.etag)
+      const outputAccepted = Boolean(job && outputVerified && outputMatchesJob && job.state !== "cancelled")
       if (job && outputVerified && job.state !== "completed" && job.state !== "cancelled") {
         const { error: repairError } = await admin
           .from("jobs")

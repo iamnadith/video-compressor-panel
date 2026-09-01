@@ -2,6 +2,7 @@ import "server-only"
 
 import {
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
@@ -144,4 +145,49 @@ export async function deleteClaimedObject(key: string, protectedKey?: string) {
   }
   const { client, config } = await getR2Client()
   await client.send(new DeleteObjectCommand({ Bucket: config.r2Bucket, Key: key }))
+}
+
+async function deleteObjectBatch(client: S3Client, bucket: string, keys: string[]) {
+  if (!keys.length) return 0
+  const result = await client.send(new DeleteObjectsCommand({
+    Bucket: bucket,
+    Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
+  }))
+  if (result.Errors?.length) {
+    const firstError = result.Errors[0]
+    throw new Error(`R2 refused to delete ${result.Errors.length} object(s): ${firstError?.Message ?? firstError?.Code ?? "unknown error"}`)
+  }
+  return keys.length
+}
+
+async function deleteListedObjects(prefix?: string) {
+  const { client, config } = await getR2Client()
+  let continuationToken: string | undefined
+  let deleted = 0
+
+  do {
+    const page = await client.send(new ListObjectsV2Command({
+      Bucket: config.r2Bucket,
+      Prefix: prefix,
+      ContinuationToken: continuationToken,
+      MaxKeys: 1000,
+    }))
+    const keys = (page.Contents ?? [])
+      .map((item) => item.Key)
+      .filter((key): key is string => Boolean(key))
+    deleted += await deleteObjectBatch(client, config.r2Bucket, keys)
+    continuationToken = page.NextContinuationToken
+  } while (continuationToken)
+
+  return { deleted, bucket: config.r2Bucket }
+}
+
+export async function deleteR2Prefix(prefix: string) {
+  const normalizedPrefix = prefix.trim().replace(/\/+$/, "")
+  if (!normalizedPrefix) throw new Error("Refusing to delete an empty R2 prefix.")
+  return deleteListedObjects(`${normalizedPrefix}/`)
+}
+
+export async function deleteR2Bucket() {
+  return deleteListedObjects()
 }

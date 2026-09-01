@@ -149,6 +149,7 @@ class QueryBuilder<T extends QueryResultRow = Record<string, any>> implements Pr
   private filters: Filter[] = []
   private sort: { column: string; ascending: boolean } | undefined
   private maxRows: number | undefined
+  private rowRange: { from: number; to: number } | undefined
   private conflict: { columns: string[]; ignore: boolean } | undefined
   private cardinality: "many" | "single" | "maybeSingle" = "many"
 
@@ -199,6 +200,15 @@ class QueryBuilder<T extends QueryResultRow = Record<string, any>> implements Pr
 
   limit(value: number) {
     this.maxRows = value
+    return this
+  }
+
+  range(from: number, to: number) {
+    const normalizedFrom = Math.max(0, Math.floor(from))
+    this.rowRange = {
+      from: normalizedFrom,
+      to: Math.max(normalizedFrom, Math.floor(to)),
+    }
     return this
   }
 
@@ -284,11 +294,14 @@ class QueryBuilder<T extends QueryResultRow = Record<string, any>> implements Pr
     const where = parameters.clauses.length ? ` where ${parameters.clauses.join(" and ")}` : ""
     const order = this.sort ? ` order by ${identifier(this.table)}.${identifier(this.sort.column)} ${this.sort.ascending ? "asc" : "desc"}` : ""
     const limit = this.maxRows ? ` limit ${Math.max(0, Math.floor(this.maxRows))}` : ""
+    const range = this.rowRange
+      ? ` limit ${this.rowRange.to - this.rowRange.from + 1} offset ${this.rowRange.from}`
+      : ""
     if (this.options.head) {
       const countResult = await query<{ count: number }>(`select count(*)::int as count from ${tableName(this.table)}${where}`, parameters.values)
       return { data: null, error: null, count: Number(countResult.rows[0]?.count ?? 0) }
     }
-    const result = await query<T>(`select ${selected.sql} from ${tableName(this.table)} ${joins.join(" ")}${where}${order}${limit}`, parameters.values)
+    const result = await query<T>(`select ${selected.sql} from ${tableName(this.table)} ${joins.join(" ")}${where}${order}${range || limit}`, parameters.values)
     return this.cardinal(result.rows.map((row) => hydrateRelations(row, selected.nested) as T))
   }
 

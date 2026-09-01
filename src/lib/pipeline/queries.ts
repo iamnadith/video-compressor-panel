@@ -1,6 +1,8 @@
 import "server-only"
 
 import { createAdminClient } from "@/lib/db-client"
+import { listPrefixPage } from "@/lib/r2"
+import { getPipelineSettings } from "@/lib/pipeline/config"
 
 export type DashboardJob = {
   id: string; source_key: string; output_key?: string | null; state: string; progress: number
@@ -17,6 +19,19 @@ export type DashboardWorker = {
   architecture?: string | null; agent_version: string; state: string; last_seen_at: string
   first_seen_at: string; last_error?: string | null; current_job_id?: string | null
   capabilities?: Record<string, unknown>
+}
+
+export const jobStatusFilters = ["claimed", "processing", "completed", "failed"] as const
+export type JobStatusFilter = "all" | (typeof jobStatusFilters)[number]
+
+export const JOBS_PAGE_SIZE = 25
+
+export type StorageDirectory = {
+  id: "ingest" | "processing" | "output"
+  label: string
+  prefix: string
+  fileCount: number
+  totalBytes: number
 }
 
 export async function getDashboardData() {
@@ -46,14 +61,49 @@ export async function getDashboardData() {
   }
 }
 
-export async function getJobs() {
-  const { data, error } = await createAdminClient()
+function jobsQuery(status: JobStatusFilter, page: number) {
+  const query = createAdminClient()
     .from<DashboardJob>("jobs")
     .select("id,source_key,output_key,state,progress,current_pass,source_size,output_size,attempt_count,max_attempts,error_message,discovered_at,updated_at,workers(display_name)")
     .order("updated_at", { ascending: false })
-    .limit(200)
-  if (error) throw error
-  return (data ?? []) as DashboardJob[]
+    .range((page - 1) * JOBS_PAGE_SIZE, page * JOBS_PAGE_SIZE - 1)
+  if (status !== "all") query.eq("state", status)
+  return query
+}
+
+function jobsCountQuery(status: JobStatusFilter) {
+  const query = createAdminClient().from("jobs").select("id", { count: "exact", head: true })
+  if (status !== "all") query.eq("state", status)
+  return query
+}
+
+export async function getJobs(page: number, status: JobStatusFilter) {
+  const requestedPage = Math.max(1, Math.floor(page))
+  const [jobsResult, countResult] = await Promise.all([
+    jobsQuery(status, requestedPage),
+    jobsCountQuery(status),
+  ])
+  if (jobsResult.error) throw jobsResult.error
+  if (countResult.error) throw countResult.error
+
+  const total = countResult.count ?? 0
+  const totalPages = Math.ceil(total / JOBS_PAGE_SIZE)
+  const currentPage = totalPages ? Math.min(requestedPage, totalPages) : 1
+  let data = jobsResult.data ?? []
+
+  if (currentPage !== requestedPage) {
+    const corrected = await jobsQuery(status, currentPage)
+    if (corrected.error) throw corrected.error
+    data = corrected.data ?? []
+  }
+
+  return {
+    jobs: data as DashboardJob[],
+    total,
+    totalPages,
+    page: currentPage,
+    pageSize: JOBS_PAGE_SIZE,
+  }
 }
 
 export async function getWorkers() {
@@ -81,6 +131,35 @@ export async function getStorageSummary() {
     outputBytes: jobs.reduce((sum: number, job: DashboardJob) => sum + Number(job.output_size ?? 0), 0),
     jobs,
   }
+}
+
+async function getPrefixStats(prefix: string) {
+  let continuationToken: string | undefined
+  let fileCount = 0
+  let totalBytes = 0
+
+  do {
+    const page = await listPrefixPage(prefix, continuationToken, 500)
+    fileCount += page.objects.length
+    totalBytes += page.objects.reduce((sum, object) => sum + Number(object.size), 0)
+    continuationToken = page.nextContinuationToken
+  } while (continuationToken)
+
+  return { fileCount, totalBytes }
+}
+
+export async function getStorageDirectories(): Promise<StorageDirectory[]> {
+  const settings = await getPipelineSettings()
+  const directories = [
+    { id: "ingest", label: "Ingest", prefix: settings.ingest_prefix },
+    { id: "processing", label: "Processing", prefix: settings.claimed_prefix },
+    { id: "output", label: "Output", prefix: settings.processed_prefix },
+  ] as const
+  const stats = await Promise.all(directories.map(async (directory) => ({
+    ...directory,
+    ...(await getPrefixStats(directory.prefix)),
+  })))
+  return stats
 }
 
 export async function getActivity() {

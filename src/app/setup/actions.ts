@@ -5,7 +5,7 @@ import { z } from "zod"
 
 import { hashPassword } from "@/lib/auth"
 import { isPanelConfigured } from "@/lib/env"
-import { query, withTransaction } from "@/lib/db"
+import { withTransaction } from "@/lib/db"
 
 const schema = z.object({
   email: z.email("Enter a valid email address."),
@@ -47,7 +47,7 @@ export async function createInitialAdminAction(_state: SetupState, formData: For
     const result = await withTransaction(async (transaction) => {
       // Serialize bootstrap attempts so two requests cannot both observe an empty table.
       await transaction.query("select pg_advisory_xact_lock(hashtext($1))", ["video-compressor-panel:initial-admin"])
-      const count = await transaction.query<{ count: number }>("select count(*)::int as count from public.panel_users")
+      const count = await transaction.query("select count(*)::int as count from public.panel_users")
       if (Number(count.rows[0]?.count ?? 0) > 0) return "exists"
       await transaction.query(
         "insert into public.panel_users (email, password_hash) values (lower($1), $2)",
